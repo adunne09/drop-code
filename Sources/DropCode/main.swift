@@ -171,6 +171,7 @@ final class DropPanelController: NSObject {
     private var previousApplication: NSRunningApplication?
     private var animationGeneration = 0
     private(set) var isVisible = false
+    private(set) var isFullscreen = false
     private var isLatched = false
     private var panelHeightRatio: CGFloat
     private var panelWidthRatio: CGFloat
@@ -280,6 +281,30 @@ final class DropPanelController: NSObject {
         setVisible(false)
     }
 
+    @discardableResult
+    func enterFullscreen() -> Bool {
+        guard isVisible, !isFullscreen else { return false }
+        isFullscreen = true
+
+        let frame = (panel.screen ?? targetScreen).frame
+        let duration = motionDuration
+        guard duration > 0 else {
+            panel.setFrame(frame, display: true)
+            panel.alphaValue = 1
+            terminalView?.fitToSize()
+            return true
+        }
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(frame, display: true)
+            panel.animator().alphaValue = 1
+        }
+        terminalView?.fitToSize()
+        return true
+    }
+
     func restartOpenCode() {
         rebuildTerminal()
         if isVisible {
@@ -335,7 +360,9 @@ final class DropPanelController: NSObject {
             clamped,
             forKey: SettingsKey.backgroundOpacityPercentage
         )
-        panel.alphaValue = backgroundOpacity
+        if !isFullscreen {
+            panel.alphaValue = backgroundOpacity
+        }
     }
 
     func setDesktopNotificationsEnabled(_ enabled: Bool) {
@@ -375,6 +402,7 @@ final class DropPanelController: NSObject {
             )
             previousApplication = NSWorkspace.shared.frontmostApplication
             panel.setFrame(frame, display: false)
+            panel.alphaValue = backgroundOpacity
             clipView.layoutSubtreeIfNeeded()
             terminalContainer.frame = hiddenContentFrame
             terminalView?.setSurfaceVisible(true)
@@ -392,6 +420,7 @@ final class DropPanelController: NSObject {
                 self.focusTerminal()
             }
         } else {
+            isFullscreen = false
             animateContent(
                 to: hiddenContentFrame,
                 duration: duration,
@@ -442,11 +471,13 @@ final class DropPanelController: NSObject {
 
     private func updatePanelGeometry() {
         let screen = panel.screen ?? targetScreen
-        let frame = Self.panelFrame(
-            for: screen,
-            heightRatio: panelHeightRatio,
-            widthRatio: panelWidthRatio
-        )
+        let frame = isFullscreen
+            ? screen.frame
+            : Self.panelFrame(
+                for: screen,
+                heightRatio: panelHeightRatio,
+                widthRatio: panelWidthRatio
+            )
         panel.setFrame(frame, display: isVisible)
         clipView.layoutSubtreeIfNeeded()
         terminalContainer.frame = isVisible ? clipView.bounds : hiddenContentFrame
@@ -908,6 +939,8 @@ final class ModifierChordMonitor {
     private var gestureIsValid = false
     private var holdWasTriggered = false
     private var openedForHold = false
+    private var pendingCloseWorkItem: DispatchWorkItem?
+    private var pendingCloseGeneration = 0
 
     init(panelController: DropPanelController) {
         self.panelController = panelController
@@ -1027,9 +1060,56 @@ final class ModifierChordMonitor {
         if holdWasTriggered {
             panelController.endMomentary(openedByGesture: openedForHold)
         } else {
-            panelController.toggleLatched()
+            handleTap()
         }
         resetGesture()
+    }
+
+    private func handleTap() {
+        if panelController.isFullscreen {
+            cancelPendingClose()
+            panelController.toggleLatched()
+            return
+        }
+
+        guard panelController.isVisible else {
+            cancelPendingClose()
+            panelController.toggleLatched()
+            return
+        }
+
+        if pendingCloseWorkItem != nil {
+            cancelPendingClose()
+            _ = panelController.enterFullscreen()
+            return
+        }
+
+        pendingCloseGeneration += 1
+        let generation = pendingCloseGeneration
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.pendingCloseGeneration == generation,
+                  self.pendingCloseWorkItem != nil
+            else { return }
+
+            self.pendingCloseWorkItem = nil
+            if self.panelController.isVisible,
+               !self.panelController.isFullscreen
+            {
+                self.panelController.toggleLatched()
+            }
+        }
+        pendingCloseWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + NSEvent.doubleClickInterval,
+            execute: workItem
+        )
+    }
+
+    private func cancelPendingClose() {
+        pendingCloseWorkItem?.cancel()
+        pendingCloseWorkItem = nil
+        pendingCloseGeneration += 1
     }
 
     private func cancelGesture() {
