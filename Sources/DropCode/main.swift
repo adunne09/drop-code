@@ -1,11 +1,11 @@
 import AppKit
 import ApplicationServices
 import GhosttyTerminal
-import QuartzCore
 import UserNotifications
 
-private let animationDuration: TimeInterval = 0.25
 private let holdDelay: TimeInterval = 0.2
+private let leftOptionKeyCode: CGKeyCode = 58
+private let rightOptionKeyCode: CGKeyCode = 61
 
 private enum SettingsKey {
     static let panelHeightPercentage = "panelHeightPercentage"
@@ -169,8 +169,8 @@ final class DropPanelController: NSObject {
     }()
     private var terminalView: TerminalView?
     private var previousApplication: NSRunningApplication?
-    private var animationGeneration = 0
     private(set) var isVisible = false
+    private(set) var isFullscreen = false
     private var isLatched = false
     private var panelHeightRatio: CGFloat
     private var panelWidthRatio: CGFloat
@@ -280,6 +280,26 @@ final class DropPanelController: NSObject {
         setVisible(false)
     }
 
+    @discardableResult
+    func enterFullscreen() -> Bool {
+        guard isVisible, !isFullscreen else { return false }
+        isFullscreen = true
+
+        let frame = (panel.screen ?? targetScreen).frame
+        panel.setFrame(frame, display: true)
+        panel.alphaValue = 1
+        terminalView?.fitToSize()
+        return true
+    }
+
+    func showFullscreen() {
+        if !isVisible {
+            isLatched = true
+            setVisible(true)
+        }
+        _ = enterFullscreen()
+    }
+
     func restartOpenCode() {
         rebuildTerminal()
         if isVisible {
@@ -335,7 +355,9 @@ final class DropPanelController: NSObject {
             clamped,
             forKey: SettingsKey.backgroundOpacityPercentage
         )
-        panel.alphaValue = backgroundOpacity
+        if !isFullscreen {
+            panel.alphaValue = backgroundOpacity
+        }
     }
 
     func setDesktopNotificationsEnabled(_ enabled: Bool) {
@@ -362,9 +384,6 @@ final class DropPanelController: NSObject {
     private func setVisible(_ visible: Bool) {
         guard visible != isVisible else { return }
         isVisible = visible
-        animationGeneration += 1
-        let generation = animationGeneration
-        let duration = motionDuration
 
         if visible {
             let screen = targetScreen
@@ -375,81 +394,39 @@ final class DropPanelController: NSObject {
             )
             previousApplication = NSWorkspace.shared.frontmostApplication
             panel.setFrame(frame, display: false)
+            panel.alphaValue = backgroundOpacity
             clipView.layoutSubtreeIfNeeded()
-            terminalContainer.frame = hiddenContentFrame
+            terminalContainer.frame = clipView.bounds
             terminalView?.setSurfaceVisible(true)
             panel.orderFrontRegardless()
             panel.makeKey()
             NSApp.activate(ignoringOtherApps: true)
 
-            animateContent(
-                to: clipView.bounds,
-                duration: duration,
-                entering: true
-            )
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isVisible else { return }
                 self.focusTerminal()
             }
         } else {
-            animateContent(
-                to: hiddenContentFrame,
-                duration: duration,
-                entering: false
-            )
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
-                guard let self,
-                      self.animationGeneration == generation,
-                      !self.isVisible
-                else { return }
-
-                self.panel.orderOut(nil)
-                self.terminalView?.setSurfaceVisible(false)
-                self.previousApplication?.activate(options: [.activateIgnoringOtherApps])
-                self.previousApplication = nil
-            }
+            isFullscreen = false
+            panel.orderOut(nil)
+            terminalView?.setSurfaceVisible(false)
+            previousApplication?.activate(options: [.activateIgnoringOtherApps])
+            previousApplication = nil
         }
-    }
-
-    private func animateContent(
-        to frame: NSRect,
-        duration: TimeInterval,
-        entering: Bool
-    ) {
-        guard duration > 0 else {
-            terminalContainer.frame = frame
-            return
-        }
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(
-                name: entering ? .easeOut : .easeIn
-            )
-            terminalContainer.animator().frame = frame
-        }
-    }
-
-    private var hiddenContentFrame: NSRect {
-        NSRect(
-            x: clipView.bounds.minX,
-            y: clipView.bounds.height,
-            width: clipView.bounds.width,
-            height: clipView.bounds.height
-        )
     }
 
     private func updatePanelGeometry() {
         let screen = panel.screen ?? targetScreen
-        let frame = Self.panelFrame(
-            for: screen,
-            heightRatio: panelHeightRatio,
-            widthRatio: panelWidthRatio
+        let frame = isFullscreen
+            ? screen.frame
+            : Self.panelFrame(
+                for: screen,
+                heightRatio: panelHeightRatio,
+                widthRatio: panelWidthRatio
         )
         panel.setFrame(frame, display: isVisible)
         clipView.layoutSubtreeIfNeeded()
-        terminalContainer.frame = isVisible ? clipView.bounds : hiddenContentFrame
+        terminalContainer.frame = clipView.bounds
         terminalView?.fitToSize()
     }
 
@@ -527,12 +504,6 @@ final class DropPanelController: NSObject {
         let intersection = displayBounds.intersection(windowBounds)
         guard !intersection.isNull else { return 0 }
         return intersection.width * intersection.height
-    }
-
-    private var motionDuration: TimeInterval {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            ? 0
-            : animationDuration
     }
 
     private static func panelFrame(
@@ -908,6 +879,7 @@ final class ModifierChordMonitor {
     private var gestureIsValid = false
     private var holdWasTriggered = false
     private var openedForHold = false
+    private var fullscreenChordIsDown = false
 
     init(panelController: DropPanelController) {
         self.panelController = panelController
@@ -983,6 +955,27 @@ final class ModifierChordMonitor {
         guard type == .flagsChanged else { return }
         let hasControl = flags.contains(.maskControl)
         let hasCommand = flags.contains(.maskCommand)
+        let hasLeftOption = CGEventSource.keyState(
+            .combinedSessionState,
+            key: leftOptionKeyCode
+        )
+        let hasRightOption = CGEventSource.keyState(
+            .combinedSessionState,
+            key: rightOptionKeyCode
+        )
+        let fullscreenChordIsNowDown = hasControl
+            && hasCommand
+            && hasLeftOption
+            && !hasRightOption
+            && !flags.contains(.maskShift)
+        if fullscreenChordIsNowDown, !fullscreenChordIsDown {
+            fullscreenChordIsDown = true
+            cancelGesture()
+            panelController.showFullscreen()
+        } else if !fullscreenChordIsNowDown {
+            fullscreenChordIsDown = false
+        }
+
         let hasExtraModifier = flags.contains(.maskShift)
             || flags.contains(.maskAlternate)
         let chordIsNowDown = hasControl && hasCommand
