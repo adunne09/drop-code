@@ -10,7 +10,7 @@ Ghostty.app is not required.
 
 - Tap `Control+Command` to toggle the panel.
 - Hold `Control+Command` to show it until you release the keys.
-- With the panel open, press `Control+Command+F` to make it fullscreen and fully opaque. Tap `Control+Command` to close it.
+- With the panel open, press `Control+Command+Space` to make it fullscreen and fully opaque. Tap `Control+Command` to close it.
 - Launch OpenCode, Codex, Claude, or any custom shell command.
 - Adjust panel height, centered width, and window opacity from settings.
 - Forward terminal completion requests to macOS desktop notifications.

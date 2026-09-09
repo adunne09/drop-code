@@ -4,7 +4,7 @@ import GhosttyTerminal
 import UserNotifications
 
 private let holdDelay: TimeInterval = 0.2
-private let fullscreenKeyCode: CGKeyCode = 3 // ANSI F
+private let fullscreenKeyCode: CGKeyCode = 49 // ANSI Space
 
 private enum SettingsKey {
     static let panelHeightPercentage = "panelHeightPercentage"
@@ -50,10 +50,10 @@ private func eventTapCallback(
     let keyCode = type == .keyDown
         ? CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
         : nil
-    MainActor.assumeIsolated {
+    let shouldConsume = MainActor.assumeIsolated {
         monitor.receive(type: type, flags: event.flags, keyCode: keyCode)
     }
-    return Unmanaged.passUnretained(event)
+    return shouldConsume ? nil : Unmanaged.passUnretained(event)
 }
 
 final class DropPanel: NSPanel {
@@ -874,7 +874,6 @@ final class ModifierChordMonitor {
     private var holdWasTriggered = false
     private var openedForHold = false
     private var panelWasVisibleAtGestureStart = false
-    private var fullscreenKeyIsDown = false
 
     init(panelController: DropPanelController) {
         self.panelController = panelController
@@ -889,10 +888,6 @@ final class ModifierChordMonitor {
         RunLoop.main.add(timer, forMode: .common)
         pollTimer = timer
 
-        guard CGPreflightListenEventAccess() else {
-            return true
-        }
-
         let mask = (CGEventMask(1) << CGEventType.flagsChanged.rawValue)
             | (CGEventMask(1) << CGEventType.keyDown.rawValue)
         let userInfo = Unmanaged.passUnretained(self).toOpaque()
@@ -900,7 +895,7 @@ final class ModifierChordMonitor {
         guard let eventTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
-            options: .listenOnly,
+            options: .defaultTap,
             eventsOfInterest: mask,
             callback: eventTapCallback,
             userInfo: userInfo
@@ -918,24 +913,7 @@ final class ModifierChordMonitor {
 
     private func pollKeyboardState() {
         let flags = CGEventSource.flagsState(.combinedSessionState)
-        receive(type: .flagsChanged, flags: flags)
-
-        let isFullscreenKeyDown = CGEventSource.keyState(
-            .combinedSessionState,
-            key: fullscreenKeyCode
-        )
-        if !isFullscreenKeyDown {
-            fullscreenKeyIsDown = false
-        } else if chordIsDown,
-                  !fullscreenKeyIsDown,
-                  panelWasVisibleAtGestureStart,
-                  hasOnlyToggleModifiers(flags)
-        {
-            fullscreenKeyIsDown = true
-            cancelGesture()
-            _ = panelController.enterFullscreen()
-            return
-        }
+        _ = receive(type: .flagsChanged, flags: flags)
 
         guard chordIsDown else { return }
         let modifierKeyCodes: Set<CGKeyCode> = [54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
@@ -953,32 +931,30 @@ final class ModifierChordMonitor {
         type: CGEventType,
         flags: CGEventFlags,
         keyCode: CGKeyCode? = nil
-    ) {
+    ) -> Bool {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let eventTap {
                 CGEvent.tapEnable(tap: eventTap, enable: true)
             }
-            return
+            return false
         }
 
         if type == .keyDown {
             if keyCode == fullscreenKeyCode,
-               !fullscreenKeyIsDown,
                panelWasVisibleAtGestureStart,
                hasOnlyToggleModifiers(flags)
             {
-                fullscreenKeyIsDown = true
                 cancelGesture()
                 _ = panelController.enterFullscreen()
-                return
+                return true
             }
             if chordIsDown {
                 cancelGesture()
             }
-            return
+            return false
         }
 
-        guard type == .flagsChanged else { return }
+        guard type == .flagsChanged else { return false }
         let hasControl = flags.contains(.maskControl)
         let hasCommand = flags.contains(.maskCommand)
         let hasExtraModifier = flags.contains(.maskShift)
@@ -998,6 +974,7 @@ final class ModifierChordMonitor {
             chordIsDown = false
             finishGesture()
         }
+        return false
     }
 
     private func beginGesture() {
