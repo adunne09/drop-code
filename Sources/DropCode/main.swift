@@ -292,6 +292,14 @@ final class DropPanelController: NSObject {
         return true
     }
 
+    func showFullscreen() {
+        if !isVisible {
+            isLatched = true
+            setVisible(true)
+        }
+        _ = enterFullscreen()
+    }
+
     func restartOpenCode() {
         rebuildTerminal()
         if isVisible {
@@ -872,8 +880,6 @@ final class ModifierChordMonitor {
     private var holdWasTriggered = false
     private var openedForHold = false
     private var fullscreenChordIsDown = false
-    private var fullscreenSequenceIsActive = false
-    private var panelWasVisibleAtFullscreenSequenceStart = false
 
     init(panelController: DropPanelController) {
         self.panelController = panelController
@@ -957,15 +963,6 @@ final class ModifierChordMonitor {
             .combinedSessionState,
             key: rightOptionKeyCode
         )
-        let hasAnyFullscreenModifier = hasControl || hasCommand || hasLeftOption
-        if hasAnyFullscreenModifier, !fullscreenSequenceIsActive {
-            fullscreenSequenceIsActive = true
-            panelWasVisibleAtFullscreenSequenceStart = panelController.isVisible
-        } else if !hasAnyFullscreenModifier {
-            fullscreenSequenceIsActive = false
-            panelWasVisibleAtFullscreenSequenceStart = false
-        }
-
         let fullscreenChordIsNowDown = hasControl
             && hasCommand
             && hasLeftOption
@@ -973,10 +970,8 @@ final class ModifierChordMonitor {
             && !flags.contains(.maskShift)
         if fullscreenChordIsNowDown, !fullscreenChordIsDown {
             fullscreenChordIsDown = true
-            if panelWasVisibleAtFullscreenSequenceStart {
-                cancelGesture()
-                _ = panelController.enterFullscreen()
-            }
+            cancelGesture()
+            panelController.showFullscreen()
         } else if !fullscreenChordIsNowDown {
             fullscreenChordIsDown = false
         }
