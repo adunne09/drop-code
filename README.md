@@ -8,9 +8,9 @@ DropCode embeds [`libghostty`](https://ghostty.org) and starts its terminal
 session when the app launches, so your agent is ready before the panel appears.
 Ghostty.app is not required.
 
-- Tap `Control+Command` to toggle the panel.
+- Tap `Control+Command` to open or close the panel. From fullscreen, each tap steps back through the normal drawer and then closed states.
 - Hold `Control+Command` to show it until you release the keys.
-- Press `Control+Command+Left Option` to open the panel fullscreen and fully opaque. Tap `Control+Command` to close it.
+- Press `Control+Command+Left Option` to open the panel fullscreen and fully opaque. Press it again from fullscreen to close the panel directly.
 - Launch OpenCode, Codex, Claude, or any custom shell command.
 - Adjust panel height, centered width, and window opacity from settings.
 - Forward terminal completion requests to macOS desktop notifications.

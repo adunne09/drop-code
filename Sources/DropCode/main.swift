@@ -268,6 +268,14 @@ final class DropPanelController: NSObject {
         }
     }
 
+    func handleModifierTap() {
+        if isFullscreen {
+            restoreDrawer()
+        } else {
+            toggleLatched()
+        }
+    }
+
     func beginMomentary() -> Bool {
         guard !isVisible else { return false }
         isLatched = false
@@ -293,11 +301,34 @@ final class DropPanelController: NSObject {
     }
 
     func showFullscreen() {
+        isLatched = true
         if !isVisible {
-            isLatched = true
             setVisible(true)
         }
         _ = enterFullscreen()
+    }
+
+    func toggleFullscreen() {
+        if isFullscreen {
+            isLatched = false
+            setVisible(false)
+        } else {
+            showFullscreen()
+        }
+    }
+
+    private func restoreDrawer() {
+        guard isVisible, isFullscreen else { return }
+        isFullscreen = false
+        let screen = panel.screen ?? targetScreen
+        let frame = Self.panelFrame(
+            for: screen,
+            heightRatio: panelHeightRatio,
+            widthRatio: panelWidthRatio
+        )
+        panel.setFrame(frame, display: true)
+        panel.alphaValue = backgroundOpacity
+        terminalView?.fitToSize()
     }
 
     func restartOpenCode() {
@@ -971,7 +1002,7 @@ final class ModifierChordMonitor {
         if fullscreenChordIsNowDown, !fullscreenChordIsDown {
             fullscreenChordIsDown = true
             cancelGesture()
-            panelController.showFullscreen()
+            panelController.toggleFullscreen()
         } else if !fullscreenChordIsNowDown {
             fullscreenChordIsDown = false
         }
@@ -1020,7 +1051,7 @@ final class ModifierChordMonitor {
         if holdWasTriggered {
             panelController.endMomentary(openedByGesture: openedForHold)
         } else {
-            panelController.toggleLatched()
+            panelController.handleModifierTap()
         }
         resetGesture()
     }
