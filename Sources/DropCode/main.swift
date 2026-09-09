@@ -4,6 +4,8 @@ import GhosttyTerminal
 import UserNotifications
 
 private let holdDelay: TimeInterval = 0.2
+private let leftOptionKeyCode: CGKeyCode = 58
+private let rightOptionKeyCode: CGKeyCode = 61
 
 private enum SettingsKey {
     static let panelHeightPercentage = "panelHeightPercentage"
@@ -869,8 +871,9 @@ final class ModifierChordMonitor {
     private var gestureIsValid = false
     private var holdWasTriggered = false
     private var openedForHold = false
-    private var pendingCloseWorkItem: DispatchWorkItem?
-    private var pendingCloseGeneration = 0
+    private var fullscreenChordIsDown = false
+    private var fullscreenSequenceIsActive = false
+    private var panelWasVisibleAtFullscreenSequenceStart = false
 
     init(panelController: DropPanelController) {
         self.panelController = panelController
@@ -946,6 +949,38 @@ final class ModifierChordMonitor {
         guard type == .flagsChanged else { return }
         let hasControl = flags.contains(.maskControl)
         let hasCommand = flags.contains(.maskCommand)
+        let hasLeftOption = CGEventSource.keyState(
+            .combinedSessionState,
+            key: leftOptionKeyCode
+        )
+        let hasRightOption = CGEventSource.keyState(
+            .combinedSessionState,
+            key: rightOptionKeyCode
+        )
+        let hasAnyFullscreenModifier = hasControl || hasCommand || hasLeftOption
+        if hasAnyFullscreenModifier, !fullscreenSequenceIsActive {
+            fullscreenSequenceIsActive = true
+            panelWasVisibleAtFullscreenSequenceStart = panelController.isVisible
+        } else if !hasAnyFullscreenModifier {
+            fullscreenSequenceIsActive = false
+            panelWasVisibleAtFullscreenSequenceStart = false
+        }
+
+        let fullscreenChordIsNowDown = hasControl
+            && hasCommand
+            && hasLeftOption
+            && !hasRightOption
+            && !flags.contains(.maskShift)
+        if fullscreenChordIsNowDown, !fullscreenChordIsDown {
+            fullscreenChordIsDown = true
+            if panelWasVisibleAtFullscreenSequenceStart {
+                cancelGesture()
+                _ = panelController.enterFullscreen()
+            }
+        } else if !fullscreenChordIsNowDown {
+            fullscreenChordIsDown = false
+        }
+
         let hasExtraModifier = flags.contains(.maskShift)
             || flags.contains(.maskAlternate)
         let chordIsNowDown = hasControl && hasCommand
@@ -990,56 +1025,9 @@ final class ModifierChordMonitor {
         if holdWasTriggered {
             panelController.endMomentary(openedByGesture: openedForHold)
         } else {
-            handleTap()
+            panelController.toggleLatched()
         }
         resetGesture()
-    }
-
-    private func handleTap() {
-        if panelController.isFullscreen {
-            cancelPendingClose()
-            panelController.toggleLatched()
-            return
-        }
-
-        guard panelController.isVisible else {
-            cancelPendingClose()
-            panelController.toggleLatched()
-            return
-        }
-
-        if pendingCloseWorkItem != nil {
-            cancelPendingClose()
-            _ = panelController.enterFullscreen()
-            return
-        }
-
-        pendingCloseGeneration += 1
-        let generation = pendingCloseGeneration
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self,
-                  self.pendingCloseGeneration == generation,
-                  self.pendingCloseWorkItem != nil
-            else { return }
-
-            self.pendingCloseWorkItem = nil
-            if self.panelController.isVisible,
-               !self.panelController.isFullscreen
-            {
-                self.panelController.toggleLatched()
-            }
-        }
-        pendingCloseWorkItem = workItem
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + NSEvent.doubleClickInterval,
-            execute: workItem
-        )
-    }
-
-    private func cancelPendingClose() {
-        pendingCloseWorkItem?.cancel()
-        pendingCloseWorkItem = nil
-        pendingCloseGeneration += 1
     }
 
     private func cancelGesture() {
