@@ -6,6 +6,7 @@ import UserNotifications
 
 private let animationDuration: TimeInterval = 0.25
 private let holdDelay: TimeInterval = 0.2
+private let fullscreenKeyCode: CGKeyCode = 3 // ANSI F
 
 private enum SettingsKey {
     static let panelHeightPercentage = "panelHeightPercentage"
@@ -48,8 +49,11 @@ private func eventTapCallback(
     let monitor = Unmanaged<ModifierChordMonitor>
         .fromOpaque(userInfo)
         .takeUnretainedValue()
+    let keyCode = type == .keyDown
+        ? CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+        : nil
     MainActor.assumeIsolated {
-        monitor.receive(type: type, flags: event.flags)
+        monitor.receive(type: type, flags: event.flags, keyCode: keyCode)
     }
     return Unmanaged.passUnretained(event)
 }
@@ -939,8 +943,8 @@ final class ModifierChordMonitor {
     private var gestureIsValid = false
     private var holdWasTriggered = false
     private var openedForHold = false
-    private var pendingCloseWorkItem: DispatchWorkItem?
-    private var pendingCloseGeneration = 0
+    private var panelWasVisibleAtGestureStart = false
+    private var fullscreenKeyIsDown = false
 
     init(panelController: DropPanelController) {
         self.panelController = panelController
@@ -986,6 +990,23 @@ final class ModifierChordMonitor {
         let flags = CGEventSource.flagsState(.combinedSessionState)
         receive(type: .flagsChanged, flags: flags)
 
+        let isFullscreenKeyDown = CGEventSource.keyState(
+            .combinedSessionState,
+            key: fullscreenKeyCode
+        )
+        if !isFullscreenKeyDown {
+            fullscreenKeyIsDown = false
+        } else if chordIsDown,
+                  !fullscreenKeyIsDown,
+                  panelWasVisibleAtGestureStart,
+                  hasOnlyToggleModifiers(flags)
+        {
+            fullscreenKeyIsDown = true
+            cancelGesture()
+            _ = panelController.enterFullscreen()
+            return
+        }
+
         guard chordIsDown else { return }
         let modifierKeyCodes: Set<CGKeyCode> = [54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
         let hasOtherKeyDown = (0 ... 127).contains { rawCode in
@@ -998,7 +1019,11 @@ final class ModifierChordMonitor {
         }
     }
 
-    func receive(type: CGEventType, flags: CGEventFlags) {
+    func receive(
+        type: CGEventType,
+        flags: CGEventFlags,
+        keyCode: CGKeyCode? = nil
+    ) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let eventTap {
                 CGEvent.tapEnable(tap: eventTap, enable: true)
@@ -1007,6 +1032,16 @@ final class ModifierChordMonitor {
         }
 
         if type == .keyDown {
+            if keyCode == fullscreenKeyCode,
+               !fullscreenKeyIsDown,
+               panelWasVisibleAtGestureStart,
+               hasOnlyToggleModifiers(flags)
+            {
+                fullscreenKeyIsDown = true
+                cancelGesture()
+                _ = panelController.enterFullscreen()
+                return
+            }
             if chordIsDown {
                 cancelGesture()
             }
@@ -1039,6 +1074,7 @@ final class ModifierChordMonitor {
         gestureIsValid = true
         holdWasTriggered = false
         openedForHold = false
+        panelWasVisibleAtGestureStart = panelController.isVisible
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, self.chordIsDown, self.gestureIsValid else { return }
@@ -1060,56 +1096,9 @@ final class ModifierChordMonitor {
         if holdWasTriggered {
             panelController.endMomentary(openedByGesture: openedForHold)
         } else {
-            handleTap()
+            panelController.toggleLatched()
         }
         resetGesture()
-    }
-
-    private func handleTap() {
-        if panelController.isFullscreen {
-            cancelPendingClose()
-            panelController.toggleLatched()
-            return
-        }
-
-        guard panelController.isVisible else {
-            cancelPendingClose()
-            panelController.toggleLatched()
-            return
-        }
-
-        if pendingCloseWorkItem != nil {
-            cancelPendingClose()
-            _ = panelController.enterFullscreen()
-            return
-        }
-
-        pendingCloseGeneration += 1
-        let generation = pendingCloseGeneration
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self,
-                  self.pendingCloseGeneration == generation,
-                  self.pendingCloseWorkItem != nil
-            else { return }
-
-            self.pendingCloseWorkItem = nil
-            if self.panelController.isVisible,
-               !self.panelController.isFullscreen
-            {
-                self.panelController.toggleLatched()
-            }
-        }
-        pendingCloseWorkItem = workItem
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + NSEvent.doubleClickInterval,
-            execute: workItem
-        )
-    }
-
-    private func cancelPendingClose() {
-        pendingCloseWorkItem?.cancel()
-        pendingCloseWorkItem = nil
-        pendingCloseGeneration += 1
     }
 
     private func cancelGesture() {
@@ -1125,6 +1114,14 @@ final class ModifierChordMonitor {
         gestureIsValid = false
         holdWasTriggered = false
         openedForHold = false
+        panelWasVisibleAtGestureStart = false
+    }
+
+    private func hasOnlyToggleModifiers(_ flags: CGEventFlags) -> Bool {
+        flags.contains(.maskControl)
+            && flags.contains(.maskCommand)
+            && !flags.contains(.maskShift)
+            && !flags.contains(.maskAlternate)
     }
 }
 
