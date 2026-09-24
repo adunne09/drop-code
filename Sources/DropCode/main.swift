@@ -302,10 +302,16 @@ final class DropPanelController: NSObject {
 
     func showFullscreen() {
         isLatched = true
-        if !isVisible {
-            setVisible(true)
+        if isVisible {
+            _ = enterFullscreen()
+            return
         }
-        _ = enterFullscreen()
+
+        // Configure the final state before showing the panel. Revealing the
+        // drawer first and immediately resizing it to fullscreen can race the
+        // terminal surface's throttled resize with AppKit's first layout pass.
+        isFullscreen = true
+        setVisible(true)
     }
 
     func toggleFullscreen() {
@@ -418,16 +424,19 @@ final class DropPanelController: NSObject {
 
         if visible {
             let screen = targetScreen
-            let frame = Self.panelFrame(
-                for: screen,
-                heightRatio: panelHeightRatio,
-                widthRatio: panelWidthRatio
-            )
+            let frame = isFullscreen
+                ? screen.frame
+                : Self.panelFrame(
+                    for: screen,
+                    heightRatio: panelHeightRatio,
+                    widthRatio: panelWidthRatio
+                )
             previousApplication = NSWorkspace.shared.frontmostApplication
             panel.setFrame(frame, display: false)
-            panel.alphaValue = backgroundOpacity
+            panel.alphaValue = isFullscreen ? 1 : backgroundOpacity
             clipView.layoutSubtreeIfNeeded()
             terminalContainer.frame = clipView.bounds
+            terminalView?.fitToSize()
             terminalView?.setSurfaceVisible(true)
             panel.orderFrontRegardless()
             panel.makeKey()
@@ -435,6 +444,9 @@ final class DropPanelController: NSObject {
 
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isVisible else { return }
+                self.clipView.layoutSubtreeIfNeeded()
+                self.terminalContainer.frame = self.clipView.bounds
+                self.terminalView?.fitToSize()
                 self.focusTerminal()
             }
         } else {
