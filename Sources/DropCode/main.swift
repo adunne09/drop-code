@@ -8,8 +8,11 @@ private let leftOptionKeyCode: CGKeyCode = 58
 private let rightOptionKeyCode: CGKeyCode = 61
 
 private enum SettingsKey {
+    static let drawerEdge = "drawerEdge"
     static let panelHeightPercentage = "panelHeightPercentage"
     static let panelWidthPercentage = "panelWidthPercentage"
+    static let sidePanelHeightPercentage = "sidePanelHeightPercentage"
+    static let sidePanelWidthPercentage = "sidePanelWidthPercentage"
     static let backgroundOpacityPercentage = "backgroundOpacityPercentage"
     static let launchCommand = "launchCommand"
     static let desktopNotificationsEnabled = "desktopNotificationsEnabled"
@@ -172,6 +175,7 @@ final class DropPanelController: NSObject {
     private(set) var isVisible = false
     private(set) var isFullscreen = false
     private var isLatched = false
+    private(set) var drawerEdge: DrawerEdge
     private var panelHeightRatio: CGFloat
     private var panelWidthRatio: CGFloat
     private var backgroundOpacity: Double
@@ -180,12 +184,19 @@ final class DropPanelController: NSObject {
 
     override init() {
         let defaults = UserDefaults.standard
+        let edge = DrawerEdge(rawValue: defaults.string(
+            forKey: SettingsKey.drawerEdge
+        ) ?? "") ?? .top
         let heightPercentage = defaults.object(
-            forKey: SettingsKey.panelHeightPercentage
-        ) as? Double ?? 40
+            forKey: edge.isSide
+                ? SettingsKey.sidePanelHeightPercentage
+                : SettingsKey.panelHeightPercentage
+        ) as? Double ?? (edge.isSide ? 100 : 40)
         let widthPercentage = defaults.object(
-            forKey: SettingsKey.panelWidthPercentage
-        ) as? Double ?? 100
+            forKey: edge.isSide
+                ? SettingsKey.sidePanelWidthPercentage
+                : SettingsKey.panelWidthPercentage
+        ) as? Double ?? (edge.isSide ? 40 : 100)
         let opacityPercentage = defaults.object(
             forKey: SettingsKey.backgroundOpacityPercentage
         ) as? Double ?? 90
@@ -199,14 +210,15 @@ final class DropPanelController: NSObject {
         let widthRatio = CGFloat(min(max(widthPercentage, 10), 100) / 100)
         let opacity = min(max(opacityPercentage, 0), 100) / 100
 
+        drawerEdge = edge
         panelHeightRatio = heightRatio
         panelWidthRatio = widthRatio
         backgroundOpacity = opacity
         launchCommand = configuredLaunchCommand
         desktopNotificationsEnabled = notificationsEnabled
         let initialScreen = NSScreen.main ?? NSScreen.screens[0]
-        let initialFrame = Self.panelFrame(
-            for: initialScreen,
+        let initialFrame = edge.panelFrame(
+            in: initialScreen.frame,
             heightRatio: heightRatio,
             widthRatio: widthRatio
         )
@@ -327,8 +339,8 @@ final class DropPanelController: NSObject {
         guard isVisible, isFullscreen else { return }
         isFullscreen = false
         let screen = panel.screen ?? targetScreen
-        let frame = Self.panelFrame(
-            for: screen,
+        let frame = drawerEdge.panelFrame(
+            in: screen.frame,
             heightRatio: panelHeightRatio,
             widthRatio: panelWidthRatio
         )
@@ -364,12 +376,34 @@ final class DropPanelController: NSObject {
         desktopNotificationsEnabled
     }
 
+    func setDrawerEdge(_ edge: DrawerEdge) {
+        guard edge != drawerEdge else { return }
+        drawerEdge = edge
+        let defaults = UserDefaults.standard
+        defaults.set(edge.rawValue, forKey: SettingsKey.drawerEdge)
+        let height = defaults.object(
+            forKey: edge.isSide
+                ? SettingsKey.sidePanelHeightPercentage
+                : SettingsKey.panelHeightPercentage
+        ) as? Double ?? (edge.isSide ? 100 : 40)
+        let width = defaults.object(
+            forKey: edge.isSide
+                ? SettingsKey.sidePanelWidthPercentage
+                : SettingsKey.panelWidthPercentage
+        ) as? Double ?? (edge.isSide ? 40 : 100)
+        panelHeightRatio = CGFloat(min(max(height, 10), 100) / 100)
+        panelWidthRatio = CGFloat(min(max(width, 10), 100) / 100)
+        updatePanelGeometry()
+    }
+
     func setPanelHeightPercentage(_ percentage: Double) {
         let clamped = min(max(percentage, 10), 100)
         panelHeightRatio = CGFloat(clamped / 100)
         UserDefaults.standard.set(
             clamped,
-            forKey: SettingsKey.panelHeightPercentage
+            forKey: drawerEdge.isSide
+                ? SettingsKey.sidePanelHeightPercentage
+                : SettingsKey.panelHeightPercentage
         )
 
         updatePanelGeometry()
@@ -380,7 +414,9 @@ final class DropPanelController: NSObject {
         panelWidthRatio = CGFloat(clamped / 100)
         UserDefaults.standard.set(
             clamped,
-            forKey: SettingsKey.panelWidthPercentage
+            forKey: drawerEdge.isSide
+                ? SettingsKey.sidePanelWidthPercentage
+                : SettingsKey.panelWidthPercentage
         )
         updatePanelGeometry()
     }
@@ -426,8 +462,8 @@ final class DropPanelController: NSObject {
             let screen = targetScreen
             let frame = isFullscreen
                 ? screen.frame
-                : Self.panelFrame(
-                    for: screen,
+                : drawerEdge.panelFrame(
+                    in: screen.frame,
                     heightRatio: panelHeightRatio,
                     widthRatio: panelWidthRatio
                 )
@@ -462,8 +498,8 @@ final class DropPanelController: NSObject {
         let screen = panel.screen ?? targetScreen
         let frame = isFullscreen
             ? screen.frame
-            : Self.panelFrame(
-                for: screen,
+            : drawerEdge.panelFrame(
+                in: screen.frame,
                 heightRatio: panelHeightRatio,
                 widthRatio: panelWidthRatio
         )
@@ -547,22 +583,6 @@ final class DropPanelController: NSObject {
         let intersection = displayBounds.intersection(windowBounds)
         guard !intersection.isNull else { return 0 }
         return intersection.width * intersection.height
-    }
-
-    private static func panelFrame(
-        for screen: NSScreen,
-        heightRatio: CGFloat,
-        widthRatio: CGFloat
-    ) -> NSRect {
-        let screenFrame = screen.frame
-        let height = max(1, floor(screenFrame.height * heightRatio))
-        let width = max(1, floor(screenFrame.width * widthRatio))
-        return NSRect(
-            x: screenFrame.midX - width / 2,
-            y: screenFrame.maxY - height,
-            width: width,
-            height: height
-        )
     }
 
     private static var terminalConfiguration: TerminalConfiguration {
@@ -652,6 +672,14 @@ final class SettingsViewController: NSViewController {
     private let opacityValueLabel = NSTextField(labelWithString: "")
     private let launcherValueLabel = NSTextField(labelWithString: "")
 
+    private lazy var drawerEdgePopup: NSPopUpButton = {
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        popup.addItems(withTitles: DrawerEdge.allCases.map(\.title))
+        popup.target = self
+        popup.action = #selector(drawerEdgeChanged)
+        return popup
+    }()
+
     private lazy var heightSlider = NSSlider(
         value: panelController.panelHeightPercentage,
         minValue: 0,
@@ -736,6 +764,8 @@ final class SettingsViewController: NSViewController {
         commandRow.widthAnchor.constraint(equalToConstant: 320).isActive = true
 
         let stack = NSStackView(views: [
+            settingHeader(title: "Drawer edge", valueLabel: NSTextField(labelWithString: "")),
+            drawerEdgePopup,
             settingHeader(title: "Screen height", valueLabel: heightValueLabel),
             heightSlider,
             settingHeader(title: "Screen width", valueLabel: widthValueLabel),
@@ -751,6 +781,7 @@ final class SettingsViewController: NSViewController {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
+        stack.setCustomSpacing(20, after: drawerEdgePopup)
         stack.setCustomSpacing(20, after: heightSlider)
         stack.setCustomSpacing(20, after: widthSlider)
         stack.setCustomSpacing(24, after: opacitySlider)
@@ -761,6 +792,7 @@ final class SettingsViewController: NSViewController {
         widthSlider.isContinuous = true
         opacitySlider.isContinuous = true
         heightSlider.widthAnchor.constraint(equalToConstant: 320).isActive = true
+        drawerEdgePopup.widthAnchor.constraint(equalTo: heightSlider.widthAnchor).isActive = true
         widthSlider.widthAnchor.constraint(equalTo: heightSlider.widthAnchor).isActive = true
         opacitySlider.widthAnchor.constraint(equalTo: heightSlider.widthAnchor).isActive = true
         launcherPopup.widthAnchor.constraint(equalTo: heightSlider.widthAnchor).isActive = true
@@ -779,6 +811,7 @@ final class SettingsViewController: NSViewController {
 
     func syncValues() {
         guard isViewLoaded else { return }
+        drawerEdgePopup.selectItem(withTitle: panelController.drawerEdge.title)
         heightSlider.doubleValue = panelController.panelHeightPercentage
         widthSlider.doubleValue = panelController.panelWidthPercentage
         opacitySlider.doubleValue = panelController.backgroundOpacityPercentage
@@ -790,6 +823,14 @@ final class SettingsViewController: NSViewController {
             command: panelController.configuredLaunchCommand
         )
         launcherPopup.selectItem(withTitle: preset.rawValue)
+        updateValueLabels()
+    }
+
+    @objc private func drawerEdgeChanged(_ sender: NSPopUpButton) {
+        guard DrawerEdge.allCases.indices.contains(sender.indexOfSelectedItem) else { return }
+        panelController.setDrawerEdge(DrawerEdge.allCases[sender.indexOfSelectedItem])
+        heightSlider.doubleValue = panelController.panelHeightPercentage
+        widthSlider.doubleValue = panelController.panelWidthPercentage
         updateValueLabels()
     }
 
@@ -882,7 +923,7 @@ final class DropCodeSettingsWindowController: NSWindowController {
             panelController: panelController
         )
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 368, height: 400),
+            contentRect: NSRect(x: 0, y: 0, width: 368, height: 480),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
