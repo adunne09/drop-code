@@ -17,6 +17,7 @@ let package = Package(
             dependencies: [
                 .product(name: "GhosttyTerminal", package: "libghostty-spm")
             ]
-        )
+        ),
+        .testTarget(name: "DropCodeTests", dependencies: ["DropCode"])
     ]
 )
